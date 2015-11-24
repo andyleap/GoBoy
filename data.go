@@ -21,6 +21,10 @@ func (da *DataArray) Get(index int) *DataNode {
 	return da.cg.getNode(da.nodes[index])
 }
 
+func (da *DataArray) Len() int {
+	return len(da.nodes)
+}
+
 type DataObject struct {
 	sync.Mutex
 	cg *ConnectedGame

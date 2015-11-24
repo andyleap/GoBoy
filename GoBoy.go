@@ -45,14 +45,12 @@ const (
 )
 
 func DiscoverGames() ([]*Game, error) {
-	listen, err := net.ListenUDP("udp4", &net.UDPAddr{
-	        IP:   net.IPv4(0, 0, 0, 0),
-	})
+	listen, err := net.ListenUDP("udp4", &net.UDPAddr{})
+	log.Println(listen.LocalAddr().String())
 	if err != nil {
 		return nil, err
 	}
-	BROADCAST_IPv4 := net.IPv4(255, 255, 255, 255)
-	
+	addrs, _ := net.InterfaceAddrs()
 	done := sync.WaitGroup{}
 	done.Add(1)
 	games := []*Game{}
@@ -72,10 +70,17 @@ func DiscoverGames() ([]*Game, error) {
 			games = append(games, game)
 		}
 	}()
-	listen.WriteToUDP([]byte(`{"cmd": "autodiscover"}`), &net.UDPAddr{
-	        IP:   BROADCAST_IPv4,
-	        Port: 28000,
-	})
+	for _, addr := range addrs {
+		listen.WriteToUDP([]byte(`{"cmd": "autodiscover"}`), &net.UDPAddr{
+			IP: broadcast(addr.(*net.IPNet)),
+			Port: 28000,
+		})
+	}
+	listen.WriteToUDP([]byte(`{"cmd": "autodiscover"}`),
+		&net.UDPAddr{
+			IP: net.IPv4bcast,
+			Port: 28000,
+		})
 	done.Wait()
 	return games, nil
 }
@@ -208,19 +213,18 @@ func (cg *ConnectedGame) handlePackets() {
 						do.nodes[key] = valID
 					}
 					count = int(binary.LittleEndian.Uint16(packet[offset:offset+2]))
-					if count > 0 {
-						log.Println(packet)
-						log.Println(count)
-						log.Fatal("test")
-					}
 					offset += 2
 					for l1 := 0; l1 < count; l1++ {
+						valID := binary.LittleEndian.Uint32(packet[offset:offset+4])
 						offset+=4
-						var strcount uint32
-						for strcount = 0; packet[offset+strcount] != 0; strcount++ {}
-						key := string(packet[offset:offset+strcount])
-						offset += strcount + 1
-						delete(do.nodes, key)
+						var delKey string
+						for key, val := range do.nodes {
+							if val == valID {
+								delKey = key
+								break
+							}
+						}
+						delete(do.nodes, delKey)
 					}
 					do.Unlock()
 					val = do
@@ -281,4 +285,52 @@ func (cg *ConnectedGame) Path(path string) (interface{}, bool) {
 		}
 	}
 	return curNode.Val, true
+}
+
+func (do *DataNode) Path(path string) (interface{}, bool) {
+	parts := strings.Split(path, ".")
+	curNode := do
+	for _, part := range parts {
+		switch cn := curNode.Val.(type) {
+		case *DataArray:
+			index, err := strconv.ParseInt(part, 0, 32)
+			if err != nil {
+				return nil, false
+			}
+			curNode = cn.Get(int(index))
+		case *DataObject:
+			curNode = cn.Get(part)
+		default:
+			return nil, false
+		}
+		if curNode == nil {
+			return nil, false
+		}
+	}
+	return curNode.Val, true
+}
+
+func (do *DataObject) Path(path string) (interface{}, bool) {
+	parts := strings.SplitN(path, ".", 1)
+	return do.Get(parts[0]).Path(parts[1])
+}
+
+func broadcast(n *net.IPNet) net.IP {
+	ip := n.IP.To4()
+	if ip == nil {
+		ip = n.IP
+		return net.IP{
+			ip[0] | ^n.Mask[0], ip[1] | ^n.Mask[1], ip[2] | ^n.Mask[2],
+			ip[3] | ^n.Mask[3], ip[4] | ^n.Mask[4], ip[5] | ^n.Mask[5],
+			ip[6] | ^n.Mask[6], ip[7] | ^n.Mask[7], ip[8] | ^n.Mask[8],
+			ip[9] | ^n.Mask[9], ip[10] | ^n.Mask[10], ip[11] | ^n.Mask[11],
+			ip[12] | ^n.Mask[12], ip[13] | ^n.Mask[13], ip[14] | ^n.Mask[14],
+			ip[15] | ^n.Mask[15]}
+	}
+	ip = net.IPv4(
+		ip[0]|^n.Mask[0],
+		ip[1]|^n.Mask[1],
+		ip[2]|^n.Mask[2],
+		ip[3]|^n.Mask[3])
+	return ip
 }
